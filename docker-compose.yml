@@ -1,0 +1,98 @@
+version: '3.8'
+
+x-environment-vars: &env
+  PROJECT_NAME: picasso
+  DEBUG: 'False'
+  ALLOWED_HOST: '127.0.0.1 localhost picasso.bublik.com'
+
+x-backend-services: &backend
+  build: .
+  depends_on:
+    init-django-migrate:
+      condition: service_completed_successfully
+    init-django-static:
+      condition: service_completed_successfully
+  environment:
+    <<: *env
+  working_dir: /app/src
+  command: ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+
+x-init-service: &init
+  <<: *backend
+  environment:
+    <<: *env
+    CMD: check
+  working_dir: /app/src
+  command: sh -c 'python manage.py $${CMD}'
+
+services:
+  backend:
+    <<: *backend
+    volumes:
+      - ./src/:/app/src
+    ports:
+      - 8000:8000
+    environment:
+        <<: *env
+    labels:
+        reproxy.server: picasso.bublik.com
+        reproxy.port: 8000
+        reproxy.route: "^/(.*)"
+        reproxy.dest: "/$$1"
+        reproxy.ping: "/ping"
+      
+  init-django-migrate:
+    <<: *init
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./src/:/app/src
+    environment:
+      <<: *env
+      CMD: migrate
+  init-django-static:
+    <<: *init
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./src/:/app/src
+    environment:
+      <<: *env
+      CMD: collectstatic --noinput
+  postgres:
+    image: postgres:latest
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready"]
+      interval: 5s
+      timeout: 30s
+      retries: 3
+    environment:
+      PGUSER: postgres
+      POSTGRES_DB: picasso
+      POSTGRESS_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql
+  celery-woker:
+    <<: *backend
+    volumes:
+      - ./src/:/app/src
+    command: ["celery", "-A", "picasso.celery", "worker", "-l", "info"]
+  redis:
+    image: redis:latest
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - redis_data:/data
+volumes:
+  postgres_data:
+  redis_data:
